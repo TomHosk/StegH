@@ -1,0 +1,395 @@
+#!/usr/bin/env python3
+"""StegH
+
+Written by Thomas Hosking (z3253935) <z3253935@student.unsw.edu.au> on
+October 27 2024.st
+
+StegH provides various commands to encode, decode and detect
+steganographic data in jpeg and bitmap files.
+
+StegH currently supports most standard jpeg files, as well as 16, 24 and
+32 bit colour bitmap files, with or without alpha channels.
+
+Commands:
+stegh capacity
+    Description: Analyse bmp file to determine maximum size for of
+                 secret able to be encoded.
+    Usage:  stegh capacity [-h] [-l] [-x] [-p] [--detailed] infile
+            -h:         display help
+            -l:         use least significant bit encoding
+            -x:         use pixel padding bit encoding
+            -p:         use end of row padding bit encoding
+            --detailed: display detailed image information
+            infile:     bmp file to analyse
+
+stegh encode-bmp
+    Description: Steganographically encodes a given secret file into a
+                 given bitmap file. Encoding can be performed using
+                 pixel padding bits, end of row padding bytes, least
+                 significant bit encoding in colour and alpha channels,
+                 or any combination of these. If no encoding options are
+                 provided, defaults to using all available options.
+    Usage:  stegh encode-bmp [-h] [-l] [-x] [-p] [--detailed] infile
+                secret outfile
+            -h:         display help
+            -l:         use least significant bit encoding
+            -x:         use pixel padding bit encoding
+            -p:         use end of row padding bit encoding
+            --detailed: display detailed image information
+            infile:     bmp file to encode secret into
+            secret:     file to steganographically encode into infile
+            outfile:    filepath to save encoded bmp file
+
+stegh decode-bmp
+    Description: Decodes a secret file from an encoded bitmap file.
+                 Decoding must use the same encoding options used to
+                 encode the secret. If no encoding options are
+                 provided, defaults to using all available options.
+    Usage:  stegh decode-bmp [-h] [-l] [-x] [-p] [--detailed] infile
+                outfile
+            -h:         display help
+            -l:         use least significant bit encoding
+            -x:         use pixel padding bit encoding
+            -p:         use end of row padding bit encoding
+            --detailed: display detailed image information
+            infile:     bmp file to decode secret from
+            outfile:    filepath to save decoded secret file
+
+stegh detect-bmp
+    Description: Detects if data is steganographically encoded in the
+                 padding of a bitmap file. If dump option is used, saves
+                 the complete raw padding data of the bitmap to a given
+                 file if steganography is detected.
+    Usage:  stegh detect-bmp [-h] [--dump-file FILEPATH] infile
+            -h:                     display help
+            --dump-file FILEPATH:   save padding data to FILEPATH
+            infile:                 bmp file to detect within
+
+stegh encode-jpg
+    Description: Steganographically encodes a given secret file into a
+                 given jpeg file. Encoding can be performed by placing
+                 data after the end of image marker, or in the image
+                 metadata as comments. If no encoding options are
+                 provided, defaults to placing data after the end of
+                 image marker.
+    Usage:  stegh encode-jpg [-h] [-m] [-e] [--show-sections] infile
+                secret outfile
+            -h:             display help
+            -m:             encode secret as comment metadata
+            -e:             encode secret after end of image marker
+            --show-sections display jpeg section list
+            infile:         jpg file to encode secret into
+            secret:         file to steganographically encode into
+                            infile
+            outfile:        filepath to save encoded jpg file
+
+stegh decode-jpg
+    Description: Decodes a secret file from an encoded jpeg file.
+                 Decoding must use the same encoding options used to
+                 encode the secret. If no encoding options are
+                 provided, defaults to using decoding data after the end
+                 of image marker.
+    Usage:  stegh decode-jpg [-h] [-m] [-e] [--show-sections] infile
+                outfile
+            -h:             display help
+            -m:             decode data from comment metadata
+            -e:             decode data from after end of image marker
+            --show-sections display jpeg section list
+            infile:         jpg file to decode secret from
+            outfile:        filepath to save decoded secret file
+
+stegh detect-jpg
+    Description: Detects if data is steganographically encoded in the
+                 comment metadata or after the end of image marker of
+                 a jpeg file. If dump option is used, saves the complete
+                 data of any comments or after the end of image marker
+                 to a given file, if detected.
+    Usage:  stegh detect-jpg [-h] [--dump-file FILEPATH]
+                [--show-sections] infile
+            -h:                     display help
+            --dump-file FILEPATH:   save detected data to FILEPATH
+            --show-sections         display jpeg section list
+            infile:                 jpg file to detect within
+"""
+import sys
+import argparse
+import modules.bitmap as bitmap
+import modules.jpeg as jpeg
+from modules.custom_errors import InvalidFileError
+from modules.custom_errors import CapacityError
+
+
+def main(args):
+    data = read_file(args.infile)
+    steg_flags = pack_steg_flags(args)
+
+    if args.mode == 'capacity':
+        capacity = handled_func(bitmap.get_capacity, data, steg_flags,
+                                args.detailed)
+        print(f'Maximum secret size is {capacity} bytes')
+    elif args.mode == 'encode_bmp':
+        secret_message = read_file(args.secret)
+        data = handled_func(bitmap.encode_message, data, secret_message,
+                            steg_flags, args.detailed)
+        write_file(args.outfile, data)
+        print('Encoding completed successfully!')
+    elif args.mode == 'decode_bmp':
+        message = handled_func(bitmap.decode_message, data, steg_flags,
+                               args.detailed)
+        write_file(args.outfile, message)
+        print('Decoding completed successfully!')
+    elif args.mode == 'detect_bmp':
+        detections = handled_func(bitmap.detect_steg, data)
+        print_detections(detections, args.dump_file)
+    elif args.mode == 'encode_jpg':
+        secret_message = read_file(args.secret)
+        data = handled_func(jpeg.encode_jpg, data, secret_message, steg_flags,
+                            args.show_sections)
+        write_file(args.outfile, data)
+        print('Encoding completed successfully!')
+    elif args.mode == 'decode_jpg':
+        message = handled_func(jpeg.decode_jpg, data, steg_flags,
+                               args.show_sections)
+        write_file(args.outfile, message)
+        print('Decoding completed successfully!')
+    elif args.mode == 'detect_jpg':
+        detections = handled_func(jpeg.detect_steg_jpg, data,
+                                  args.show_sections)
+        print_detections(detections, args.dump_file)
+    else:
+        sys.exit("mode error")
+
+
+def read_file(filepath):
+    """Reads the contents of a given file.
+
+    Arguments:
+        filepath: string
+            The filepath of the file to read.
+    Returns:
+        Bytestring of the file contents.
+    """
+    try:
+        with open(filepath, "rb") as f:
+            contents = f.read()
+    except OSError as e:
+        handle_error(e)
+    return contents
+
+
+def handle_error(error):
+    """Outputs a custom error message to standard error and exits with
+    status 1.
+
+    Arguments:
+        error: string
+            Error message to print.
+    Returns:
+        Nothing
+    """
+    print(f"{sys.argv[0]}: error: {error}", file=sys.stderr)
+    sys.exit(1)
+
+
+def pack_steg_flags(args):
+    """Consolidates boolean flags from an argparse argument object into
+    a dictionary, and sets default values if required.
+
+    Arguments:
+        args: argparse argument object
+            The arguments object from argparse parsing.
+    Returns:
+        Dictionary containing all boolean flags and their set values.
+    """
+    steg_flags = {}
+    for arg in vars(args):
+        if arg in ('detailed', 'show_sections'):
+            continue
+        attr = getattr(args, arg)
+        if isinstance(attr, bool):
+            steg_flags[arg] = attr
+    # If no flags are provided as args, all steg flags used by default.
+    if True not in steg_flags.values():
+        steg_flags = {x: True for x in steg_flags}
+
+    # Since both EOI and metadata methods can store unlimited data, if
+    # both are selected then default to using only EOI.
+    if steg_flags.get('eoi', False) and steg_flags.get('metadata', False):
+        steg_flags['metadata'] = False
+
+    return steg_flags
+
+
+def handled_func(function, *args, **kwargs):
+    """Calls a given function with given arguments, catching and
+    handling InvalidFileError and CapacityError as required.
+
+    Arguments:
+        function: function
+            The function to call.
+        *args: non-keyword arguements
+            Non-keyword arguments to pass to the function
+        **kwargs: keyword arguements
+            Keyword arguments to pass to the function
+    Returns:
+        The return value of the called function.
+    """
+    try:
+        return function(*args, **kwargs)
+    except (InvalidFileError, CapacityError) as e:
+        handle_error(e)
+
+
+def write_file(filepath, contents):
+    """Creates a file with given contents.
+
+    Arguments:
+        filepath: string
+            The filepath to store the new file.
+        contents: bytestring
+            Contents to write to the new file.
+    Returns:
+        Nothing
+    """
+    try:
+        with open(filepath, "wb") as f:
+            f.write(contents)
+    except OSError as e:
+        handle_error(e)
+
+
+def print_detections(detections, dump_file):
+    """Prints steganography detection messages to stdout, and dumps the
+    steganography data to a file if one is provided.
+
+    Arguments:
+        detections: list of (description_string, data_bytestring) tuples
+            A list of tuples containing information from each detection
+            location. The description_string is a string describing
+            where data was detected, and data_bytestring contains the
+            raw data extracted from that source.
+        dump_file: string/None
+            Filepath of location to save the new dump file. If no dump
+            file is to be created, use None.
+    Returns:
+        Nothing
+    """
+    for detection in detections:
+        print(f'Steganography detected: {detection[0]}')
+    if len(detections) == 0:
+        print('No steganography detected.')
+    elif dump_file is not None:
+        write_file(args.dump_file, b''.join([x[1] for x in detections]))
+        print(f'Steganography data dumped to {args.dump_file}')
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(required=True)
+
+    # Parser for encode command
+    parser_e = subparsers.add_parser('encode-bmp',
+                                     help='encode secret in bmp file')
+    parser_e.add_argument('infile', type=str,
+                          help='bmp file to encode secret into')
+    parser_e.add_argument('secret', type=str,
+                          help='secret file to hide')
+    parser_e.add_argument('outfile', type=str,
+                          help='filepath to write encoded image to')
+    parser_e.add_argument('-l', '--lsb', action='store_true',
+                          help='use least significant bits')
+    parser_e.add_argument('-x', '--pixel-pad', action='store_true',
+                          help='use pixel padding bits')
+    parser_e.add_argument('-p', '--end-row-pad', action='store_true',
+                          help='use end of row padding bits')
+    parser_e.add_argument('--detailed', action='store_true',
+                          help='display detailed image information')
+    parser_e.set_defaults(mode='encode_bmp')
+
+    # Parser for decode command
+    parser_d = subparsers.add_parser('decode-bmp',
+                                     help='decode secret from a bmp file')
+    parser_d.add_argument('infile', type=str,
+                          help='bmp file containing encoded secret')
+    parser_d.add_argument('outfile', type=str,
+                          help='filepath to write secret file to')
+    parser_d.add_argument('-l', '--lsb', action='store_true',
+                          help='use least significant bits')
+    parser_d.add_argument('-x', '--pixel-pad', action='store_true',
+                          help='use pixel padding bits')
+    parser_d.add_argument('-p', '--end-row-pad', action='store_true',
+                          help='use end of row padding bits')
+    parser_d.add_argument('--detailed', action='store_true',
+                          help='display detailed image information')
+    parser_d.set_defaults(mode='decode_bmp')
+
+    # Parser for capacity command
+    parser_c = subparsers.add_parser('capacity', help='analyse bmp file to '
+                                     'determine maximum size for secret file')
+    parser_c.add_argument('infile', type=str, help='bmp file to analyse')
+    parser_c.add_argument('-l', '--lsb', action='store_true',
+                          help='use least significant bits')
+    parser_c.add_argument('-x', '--pixel-pad', action='store_true',
+                          help='use pixel padding bits')
+    parser_c.add_argument('-p', '--end-row-pad', action='store_true',
+                          help='use end of row padding bits')
+    parser_c.add_argument('--detailed', action='store_true',
+                          help='display detailed image information')
+    parser_c.set_defaults(mode='capacity')
+
+    # Parser for detect command
+    parser_det = subparsers.add_parser('detect-bmp',
+                                       help='detect steganographic data in a '
+                                       'bmp file')
+    parser_det.add_argument('infile', type=str, help='bmp file to scan')
+    parser_det.add_argument('--dump-file', default=None, metavar='FILEPATH',
+                            help='dumps steganographic data to FILEPATH if '
+                            'detected')
+    parser_det.set_defaults(mode='detect_bmp')
+
+    # Parser for encode-jpg command
+    parser_je = subparsers.add_parser('encode-jpg',
+                                      help='encode secret in jpeg file')
+    parser_je.add_argument('infile', type=str,
+                           help='jpeg file to encode secret into')
+    parser_je.add_argument('secret', type=str,
+                           help='secret file to hide')
+    parser_je.add_argument('outfile', type=str,
+                           help='filepath to write encoded image to')
+    parser_je.add_argument('-m', '--metadata', action='store_true',
+                           help='store secret as image metadata')
+    parser_je.add_argument('-e', '--eoi', action='store_true',
+                           help='store secret after end of image data')
+    parser_je.add_argument('--show-sections', action='store_true',
+                           help='display jpeg section list')
+    parser_je.set_defaults(mode='encode_jpg')
+
+    # Parser for decode-jpg command
+    parser_jd = subparsers.add_parser('decode-jpg',
+                                      help='decode secret from a jpeg file')
+    parser_jd.add_argument('infile', type=str,
+                           help='jpeg file containing encoded secret')
+    parser_jd.add_argument('outfile', type=str,
+                           help='filepath to write encoded image to')
+    parser_jd.add_argument('-m', '--metadata', action='store_true',
+                           help='extract secret from image metadata')
+    parser_jd.add_argument('-e', '--eoi', action='store_true',
+                           help='extract secret from after end of image data')
+    parser_jd.add_argument('--show-sections', action='store_true',
+                           help='display jpeg section list')
+    parser_jd.set_defaults(mode='decode_jpg')
+
+    # Parser for detect-jpg command
+    parser_jdet = subparsers.add_parser('detect-jpg',
+                                        help='detect steganographic data in a '
+                                        'jpeg file')
+    parser_jdet.add_argument('infile', type=str, help='jpeg file to scan')
+    parser_jdet.add_argument('--dump-file', default=None, metavar='FILEPATH',
+                             help='dumps steganographic data to FILEPATH if '
+                             'detected')
+    parser_jdet.add_argument('--show-sections', action='store_true',
+                             help='display jpeg section list')
+    parser_jdet.set_defaults(mode='detect_jpg')
+
+    args = parser.parse_args()
+    main(args)
