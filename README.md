@@ -1,8 +1,5 @@
 # STEGH
 
-Written by Thomas Hosking (z3253935) <z3253935@student.unsw.edu.au> on
-October 27 2024.
-
 STEGH provides various commands to encode, decode and detect
 steganographic data in jpg and bmp files.
 
